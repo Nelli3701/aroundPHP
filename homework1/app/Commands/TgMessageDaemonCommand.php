@@ -5,14 +5,15 @@ namespace App\Commands;
 use App\Alarm\Manager;
 use App\Alarm\TgManager;
 use App\Application;
-use App\EventSender\TelegramApi;
+use App\EventSender\EventSender;
 use App\EventSender\TelegramSender;
+use App\Queue\RabbitMQ;
 use JetBrains\PhpStorm\NoReturn;
 
 class TgMessageDaemonCommand extends Command
 {
     protected Application $app;
-    protected TelegramApi $tgApp;
+    protected EventSender $eventApp;
     private array $messages = [];
     private Manager $manager;
 
@@ -31,14 +32,16 @@ class TgMessageDaemonCommand extends Command
 
     function initDaemon(): void
     {
-        $this->tgApp = new TelegramSender($this->app->env('TELEGRAM_TOKEN'));
-
+        $this->eventApp = new EventSender(
+            new TelegramSender($this->app->env('TELEGRAM_TOKEN')),
+            new RabbitMQ('eventSender')
+        );
         $jsonMessages = file_get_contents($this->app->env('TELEGRAM_HISTORY'));
 
         if ($jsonMessages) {
             $this->messages = json_decode($jsonMessages, true);
         } else {
-            $this->messages = $this->tgApp->getMessages();
+            $this->messages = $this->eventApp->getMessages();
         }
 
         $this->manager = new TgManager($this->app, $this->messages['user']['id']);
@@ -48,7 +51,7 @@ class TgMessageDaemonCommand extends Command
     function runDaemon(): void
     {
         while (true) {
-            $newMessages = $this->tgApp->getMessages($this->messages['offset']);
+            $newMessages = $this->eventApp->getMessages($this->messages['offset']);
             if ($newMessages['result']) {
                 $this->messages['offset'] = $newMessages['offset'];
                 $this->messages['result'] = [...$this->messages['result'], ...$newMessages['result']];
@@ -61,7 +64,7 @@ class TgMessageDaemonCommand extends Command
 
                 if ($this->manager->checkCommand($command)) {
                     $answer = $this->manager->getAnswer($command, $arg ?? "");
-                    $this->tgApp->sendMessage($this->messages['user']['id'], $answer);
+                    $this->eventApp->sendMessage($this->messages['user']['id'], $answer);
                 }
             } else {
                 sleep(1);
